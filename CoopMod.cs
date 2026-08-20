@@ -1,5 +1,4 @@
 using BepInEx;
-using UnityEngine;
 
 [BepInPlugin(
     PluginGuid,
@@ -18,10 +17,6 @@ public sealed class CoopMod : BaseUnityPlugin
 
     private void Awake()
     {
-        Debug.Log(
-            "[CoopMod] Starting Co-op Mod v" +
-            PluginVersion);
-
         Freepass
             .Initialize(this);
 
@@ -37,6 +32,9 @@ public sealed class CoopMod : BaseUnityPlugin
         SeparateRole
             .Initialize(this);
 
+        ItemFix
+            .Initialize(this);
+
         ShareStamina
             .Initialize(this);
 
@@ -45,9 +43,6 @@ public sealed class CoopMod : BaseUnityPlugin
 
         ShareAlive
             .Initialize(this);
-
-        Debug.Log(
-            "[CoopMod] All systems initialized.");
     }
 
     private void OnDestroy()
@@ -61,6 +56,9 @@ public sealed class CoopMod : BaseUnityPlugin
         ShareStamina
             .Shutdown();
 
+        ItemFix
+            .Shutdown();
+
         SeparateRole
             .Shutdown();
 
@@ -72,8 +70,5 @@ public sealed class CoopMod : BaseUnityPlugin
 
         Freepass
             .Shutdown();
-
-        Debug.Log(
-            "[CoopMod] All systems shutdown.");
     }
 }
