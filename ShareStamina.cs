@@ -54,6 +54,22 @@ public static class ShareStamina
         lastClimberAfflictionData =
             new Dictionary<int, byte[]>();
 
+    private static readonly Dictionary<int, byte[]>
+        lastCarrierSpatialAfflictionData =
+            new Dictionary<int, byte[]>();
+
+    private static readonly HashSet<int>
+        spatialAfflictionTypesReceived =
+            new HashSet<int>();
+
+    private static readonly HashSet<int>
+        spatialAfflictionsOwnedByShare =
+            new HashSet<int>();
+
+    private static readonly HashSet<int>
+        spatialAfflictionRemovalSuppressOnce =
+            new HashSet<int>();
+
     private static readonly HashSet<int>
         mirroredAfflictionTypes =
             new HashSet<int>();
@@ -92,7 +108,9 @@ public static class ShareStamina
         SharedStatusSync = 3,
         CarrierStatusDelta = 4,
         SharedAfflictionApply = 5,
-        SharedAfflictionRemove = 6
+        SharedAfflictionRemove = 6,
+        CarriedSpatialAfflictionApply = 7,
+        CarriedSpatialAfflictionRemove = 8
     }
 
     private struct StaminaSnapshot
@@ -355,6 +373,10 @@ public static class ShareStamina
                 localCharacter,
                 partner);
 
+            SendCarrierSpatialAfflictionsIfChanged(
+                localCharacter,
+                partner);
+
             CleanupExpiredMirroredAfflictions(
                 localCharacter);
         }
@@ -536,6 +558,20 @@ public static class ShareStamina
                     localCharacter,
                     payload);
             }
+            else if (action ==
+                StaminaAction.CarriedSpatialAfflictionApply)
+            {
+                ApplyCarriedSpatialAffliction(
+                    localCharacter,
+                    payload);
+            }
+            else if (action ==
+                StaminaAction.CarriedSpatialAfflictionRemove)
+            {
+                RemoveCarriedSpatialAffliction(
+                    localCharacter,
+                    payload);
+            }
         }
         finally
         {
@@ -586,6 +622,10 @@ public static class ShareStamina
             0f;
 
         lastClimberAfflictionData.Clear();
+        lastCarrierSpatialAfflictionData.Clear();
+        spatialAfflictionTypesReceived.Clear();
+        spatialAfflictionsOwnedByShare.Clear();
+        spatialAfflictionRemovalSuppressOnce.Clear();
         mirroredAfflictionTypes.Clear();
         mirroredAfflictionsOwnedByShare.Clear();
 
@@ -1270,6 +1310,8 @@ public static class ShareStamina
             type ==
                 Affliction.AfflictionType.FasterBoi ||
             type ==
+                Affliction.AfflictionType.Glowing ||
+            type ==
                 Affliction.AfflictionType.ColdOverTime ||
             type ==
                 Affliction.AfflictionType.PreventPoisonHealing ||
@@ -1295,6 +1337,14 @@ public static class ShareStamina
                 Affliction.AfflictionType.MassSuperJump ||
             type ==
                 Affliction.AfflictionType.RadiateInfiniteStam;
+    }
+
+    private static bool ShouldMirrorSpatialAffliction(
+        Affliction.AfflictionType type)
+    {
+        return
+            type ==
+                Affliction.AfflictionType.Sunscreen;
     }
 
     private static bool ShouldSuppressCarrierStatusDelta(
@@ -1475,6 +1525,13 @@ public static class ShareStamina
                     typeValue] =
                     data;
 
+                if (spatialAfflictionTypesReceived
+                        .Contains(
+                            typeValue))
+                {
+                    continue;
+                }
+
                 byte[] previous;
 
                 if (!lastClimberAfflictionData
@@ -1513,6 +1570,23 @@ public static class ShareStamina
             i < removed.Count;
             i++)
         {
+            if (spatialAfflictionRemovalSuppressOnce
+                    .Remove(
+                        removed[i]))
+            {
+                continue;
+            }
+
+            if (spatialAfflictionTypesReceived
+                    .Remove(
+                        removed[i]))
+            {
+                spatialAfflictionsOwnedByShare
+                    .Remove(
+                        removed[i]);
+                continue;
+            }
+
             SendSharedAfflictionRemove(
                 climber,
                 carrier,
@@ -1530,6 +1604,205 @@ public static class ShareStamina
                 entry.Key] =
                 entry.Value;
         }
+    }
+
+    private static void SendCarrierSpatialAfflictionsIfChanged(
+        Character carrier,
+        Character climber)
+    {
+        if (suppressSendDepth > 0 ||
+            carrier == null ||
+            carrier.refs == null ||
+            carrier.refs.afflictions ==
+                null ||
+            climber == null)
+        {
+            return;
+        }
+
+        Dictionary<int, byte[]>
+            current =
+                new Dictionary<int, byte[]>();
+
+        List<Affliction> afflictions =
+            carrier
+                .refs
+                .afflictions
+                .afflictionList;
+
+        if (afflictions != null)
+        {
+            for (int i = 0;
+                i < afflictions.Count;
+                i++)
+            {
+                Affliction affliction =
+                    afflictions[i];
+
+                if (affliction == null)
+                {
+                    continue;
+                }
+
+                Affliction.AfflictionType type =
+                    affliction.GetAfflictionType();
+
+                if (!ShouldMirrorSpatialAffliction(
+                        type))
+                {
+                    continue;
+                }
+
+                byte[] data =
+                    SerializeAffliction(
+                        affliction);
+
+                if (data == null)
+                {
+                    continue;
+                }
+
+                int typeValue =
+                    (int)type;
+
+                current[
+                    typeValue] =
+                    data;
+
+                byte[] previous;
+
+                if (!lastCarrierSpatialAfflictionData
+                        .TryGetValue(
+                            typeValue,
+                            out previous) ||
+                    !ByteArraysEqual(
+                        previous,
+                        data))
+                {
+                    SendCarriedSpatialAfflictionApply(
+                        carrier,
+                        climber,
+                        data);
+                }
+            }
+        }
+
+        List<int> removed =
+            new List<int>();
+
+        foreach (
+            KeyValuePair<int, byte[]>
+                entry
+            in lastCarrierSpatialAfflictionData)
+        {
+            if (!current.ContainsKey(
+                    entry.Key))
+            {
+                removed.Add(
+                    entry.Key);
+            }
+        }
+
+        for (int i = 0;
+            i < removed.Count;
+            i++)
+        {
+            SendCarriedSpatialAfflictionRemove(
+                carrier,
+                climber,
+                removed[i]);
+        }
+
+        lastCarrierSpatialAfflictionData.Clear();
+
+        foreach (
+            KeyValuePair<int, byte[]>
+                entry
+            in current)
+        {
+            lastCarrierSpatialAfflictionData[
+                entry.Key] =
+                entry.Value;
+        }
+    }
+
+    private static void SendCarriedSpatialAfflictionApply(
+        Character sender,
+        Character partner,
+        byte[] data)
+    {
+        if (sender == null ||
+            partner == null ||
+            data == null)
+        {
+            return;
+        }
+
+        int senderActor =
+            GetActorNumber(
+                sender);
+
+        int targetActor =
+            GetActorNumber(
+                partner);
+
+        if (senderActor <= 0 ||
+            targetActor <= 0)
+        {
+            return;
+        }
+
+        SendToPartner(
+            sender,
+            partner,
+            new object[]
+            {
+                (byte)
+                    StaminaAction
+                        .CarriedSpatialAfflictionApply,
+                senderActor,
+                targetActor,
+                data
+            });
+    }
+
+    private static void SendCarriedSpatialAfflictionRemove(
+        Character sender,
+        Character partner,
+        int type)
+    {
+        if (sender == null ||
+            partner == null)
+        {
+            return;
+        }
+
+        int senderActor =
+            GetActorNumber(
+                sender);
+
+        int targetActor =
+            GetActorNumber(
+                partner);
+
+        if (senderActor <= 0 ||
+            targetActor <= 0)
+        {
+            return;
+        }
+
+        SendToPartner(
+            sender,
+            partner,
+            new object[]
+            {
+                (byte)
+                    StaminaAction
+                        .CarriedSpatialAfflictionRemove,
+                senderActor,
+                targetActor,
+                type
+            });
     }
 
     private static void SendSharedAfflictionApply(
@@ -1676,6 +1949,139 @@ public static class ShareStamina
         {
             mirroredAfflictionsOwnedByShare.Add(
                 typeValue);
+        }
+    }
+
+    private static void ApplyCarriedSpatialAffliction(
+        Character character,
+        object[] payload)
+    {
+        if (!IsClimber(
+                character) ||
+            character.refs == null ||
+            character.refs.afflictions ==
+                null ||
+            payload == null ||
+            payload.Length <
+                4)
+        {
+            return;
+        }
+
+        byte[] data =
+            payload[3]
+                as byte[];
+
+        Affliction affliction =
+            DeserializeAffliction(
+                data);
+
+        if (affliction == null)
+        {
+            return;
+        }
+
+        Affliction.AfflictionType type =
+            affliction.GetAfflictionType();
+
+        if (!ShouldMirrorSpatialAffliction(
+                type))
+        {
+            return;
+        }
+
+        int typeValue =
+            (int)type;
+
+        Affliction existing;
+
+        bool alreadyHad =
+            character
+                .refs
+                .afflictions
+                .HasAfflictionType(
+                    type,
+                    out existing);
+
+        character
+            .refs
+            .afflictions
+            .AddAffliction(
+                affliction,
+                true);
+
+        spatialAfflictionTypesReceived.Add(
+            typeValue);
+
+        if (!alreadyHad)
+        {
+            spatialAfflictionsOwnedByShare.Add(
+                typeValue);
+        }
+    }
+
+    private static void RemoveCarriedSpatialAffliction(
+        Character character,
+        object[] payload)
+    {
+        if (!IsClimber(
+                character) ||
+            character.refs == null ||
+            character.refs.afflictions ==
+                null ||
+            payload == null ||
+            payload.Length <
+                4)
+        {
+            return;
+        }
+
+        int typeValue =
+            (int)payload[3];
+
+        Affliction.AfflictionType type =
+            (Affliction.AfflictionType)
+                typeValue;
+
+        if (!ShouldMirrorSpatialAffliction(
+                type))
+        {
+            return;
+        }
+
+        spatialAfflictionTypesReceived.Remove(
+            typeValue);
+
+        bool owned =
+            spatialAfflictionsOwnedByShare
+                .Remove(
+                    typeValue);
+
+        if (!owned)
+        {
+            return;
+        }
+
+        spatialAfflictionRemovalSuppressOnce.Add(
+            typeValue);
+
+        Affliction existing;
+
+        if (character
+                .refs
+                .afflictions
+                .HasAfflictionType(
+                    type,
+                    out existing) &&
+            existing != null)
+        {
+            character
+                .refs
+                .afflictions
+                .RemoveAffliction(
+                    existing,
+                    true,
+                    false);
         }
     }
 
