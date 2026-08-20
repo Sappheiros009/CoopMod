@@ -22,6 +22,9 @@ public sealed class CoopMod : BaseUnityPlugin
             "[CoopMod] Starting Co-op Mod v" +
             PluginVersion);
 
+        Freepass
+            .Initialize(this);
+
         PairPlayerStartLog
             .EnsureCreated();
 
@@ -32,9 +35,6 @@ public sealed class CoopMod : BaseUnityPlugin
             .Initialize(this);
 
         SeparateRole
-            .Initialize(this);
-
-        ShowUI
             .Initialize(this);
 
         ShareStamina
@@ -61,9 +61,6 @@ public sealed class CoopMod : BaseUnityPlugin
         ShareStamina
             .Shutdown();
 
-        ShowUI
-            .Shutdown();
-
         SeparateRole
             .Shutdown();
 
@@ -71,6 +68,9 @@ public sealed class CoopMod : BaseUnityPlugin
             .Shutdown();
 
         OnlyEven
+            .Shutdown();
+
+        Freepass
             .Shutdown();
 
         Debug.Log(
