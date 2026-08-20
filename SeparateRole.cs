@@ -215,6 +215,38 @@ public static class SeparateRole
 
         Patch(
             typeof(
+                CharacterRopeHandling_Update_TransportPatch));
+
+        Patch(
+            typeof(
+                CharacterRopeHandling_FixedUpdate_TransportPatch));
+
+        Patch(
+            typeof(
+                CharacterRopeHandling_GrabRopeRpc_TransportPatch));
+
+        Patch(
+            typeof(
+                CharacterRopeHandling_StopRopeClimbingRpc_TransportPatch));
+
+        Patch(
+            typeof(
+                CharacterVineClimbing_Update_TransportPatch));
+
+        Patch(
+            typeof(
+                CharacterVineClimbing_FixedUpdate_TransportPatch));
+
+        Patch(
+            typeof(
+                CharacterVineClimbing_GrabVineRpc_TransportPatch));
+
+        Patch(
+            typeof(
+                CharacterVineClimbing_StopVineClimbingRpc_TransportPatch));
+
+        Patch(
+            typeof(
                 CharacterCarrying_PassOutLock_Patch));
 
         runtime =
@@ -284,6 +316,7 @@ public static class SeparateRole
             null;
 
         ResetRemoteInput();
+
     }
 
     private static void Patch(
@@ -369,6 +402,19 @@ public static class SeparateRole
             character;
     }
 
+    private static bool IsCarrierMovementAuthorityActive(
+        Character character)
+    {
+        return
+            character != null &&
+            character.data != null &&
+            (
+                character.data.isClimbing ||
+                character.data.isRopeClimbing ||
+                character.data.isVineClimbing
+            );
+    }
+
     private static bool CanClimberSendInput(
         Character character)
     {
@@ -423,21 +469,38 @@ public static class SeparateRole
     }
 
     private static void ClearClimberCharacterInput(
-        CharacterInput input)
+        CharacterInput input,
+        Character character)
     {
         if (input == null)
         {
             return;
         }
 
+        bool keepRopeJump =
+            character != null &&
+            character.data != null &&
+            (
+                character.data.isRopeClimbing ||
+                character.data.isVineClimbing
+            );
+
+        bool jumpWasPressed =
+            keepRopeJump &&
+            input.jumpWasPressed;
+
+        bool jumpIsPressed =
+            keepRopeJump &&
+            input.jumpIsPressed;
+
         input.movementInput =
             Vector2.zero;
 
         input.jumpWasPressed =
-            false;
+            jumpWasPressed;
 
         input.jumpIsPressed =
-            false;
+            jumpIsPressed;
 
         input.sprintWasPressed =
             false;
@@ -720,7 +783,8 @@ public static class SeparateRole
                 climber.data.lookValues;
         }
 
-        if (carrier.data.isClimbing)
+        if (IsCarrierMovementAuthorityActive(
+                carrier))
         {
             input.movementInput =
                 valid
@@ -962,6 +1026,25 @@ public static class SeparateRole
                     __instance,
                     character);
 
+                Character climber =
+                    character.data != null
+                        ? character.data.carriedPlayer
+                        : null;
+
+                if (climber != null &&
+                    climber.data != null &&
+                    (
+                        climber.data.isRopeClimbing ||
+                        climber.data.isVineClimbing
+                    ))
+                {
+                    __instance.jumpWasPressed =
+                        false;
+
+                    __instance.jumpIsPressed =
+                        false;
+                }
+
                 return;
             }
 
@@ -975,7 +1058,8 @@ public static class SeparateRole
                 }
 
                 ClearClimberCharacterInput(
-                    __instance);
+                    __instance,
+                    character);
             }
         }
     }
@@ -1655,6 +1739,360 @@ public static class SeparateRole
         }
     }
 
+    [HarmonyPatch(
+        typeof(CharacterRopeHandling),
+        "Update")]
+    private static class CharacterRopeHandling_Update_TransportPatch
+    {
+        [HarmonyPrefix]
+        [HarmonyPriority(Priority.First)]
+        private static bool Prefix(
+            CharacterRopeHandling __instance)
+        {
+            Character climber =
+                ResolveCharacter(
+                    __instance);
+
+            if (!IsClimber(climber))
+            {
+                return true;
+            }
+
+            if (climber.IsLocal &&
+                climber.data != null &&
+                climber.data.isRopeClimbing &&
+                climber.input != null &&
+                climber.input.jumpWasPressed &&
+                climber.photonView != null)
+            {
+                climber.photonView.RPC(
+                    "StopRopeClimbingRpc",
+                    RpcTarget.All,
+                    true);
+            }
+
+            return false;
+        }
+    }
+
+    [HarmonyPatch(
+        typeof(CharacterRopeHandling),
+        "FixedUpdate")]
+    private static class CharacterRopeHandling_FixedUpdate_TransportPatch
+    {
+        [HarmonyPrefix]
+        [HarmonyPriority(Priority.First)]
+        private static bool Prefix(
+            CharacterRopeHandling __instance)
+        {
+            Character character =
+                ResolveCharacter(
+                    __instance);
+
+            return
+                !IsClimber(character);
+        }
+    }
+
+    [HarmonyPatch(
+        typeof(CharacterRopeHandling),
+        nameof(
+            CharacterRopeHandling.GrabRopeRpc),
+        new Type[]
+        {
+            typeof(PhotonView),
+            typeof(int)
+        })]
+    private static class CharacterRopeHandling_GrabRopeRpc_TransportPatch
+    {
+        [HarmonyPostfix]
+        [HarmonyPriority(Priority.Last)]
+        private static void Postfix(
+            CharacterRopeHandling __instance,
+            PhotonView __0,
+            int __1)
+        {
+            Character climber =
+                ResolveCharacter(
+                    __instance);
+
+            if (!IsClimber(climber) ||
+                climber.data == null)
+            {
+                return;
+            }
+
+            Character carrier =
+                climber.data.carrier;
+
+            if (carrier == null ||
+                !carrier.IsLocal ||
+                carrier.data == null ||
+                carrier.photonView == null ||
+                __0 == null)
+            {
+                return;
+            }
+
+            if (carrier.data.isRopeClimbing &&
+                carrier.data.heldRope ==
+                    climber.data.heldRope)
+            {
+                return;
+            }
+
+            carrier.photonView.RPC(
+                "GrabRopeRpc",
+                RpcTarget.All,
+                __0,
+                __1);
+        }
+    }
+
+    [HarmonyPatch(
+        typeof(CharacterRopeHandling),
+        "StopRopeClimbingRpc",
+        new Type[]
+        {
+            typeof(bool)
+        })]
+    private static class CharacterRopeHandling_StopRopeClimbingRpc_TransportPatch
+    {
+        [HarmonyPostfix]
+        [HarmonyPriority(Priority.Last)]
+        private static void Postfix(
+            CharacterRopeHandling __instance,
+            bool __0)
+        {
+            Character character =
+                ResolveCharacter(
+                    __instance);
+
+            if (character == null ||
+                character.data == null)
+            {
+                return;
+            }
+
+            if (IsClimber(character))
+            {
+                Character carrier =
+                    character.data.carrier;
+
+                if (carrier != null &&
+                    carrier.IsLocal &&
+                    carrier.data != null &&
+                    carrier.data.isRopeClimbing &&
+                    carrier.photonView != null)
+                {
+                    carrier.photonView.RPC(
+                        "StopRopeClimbingRpc",
+                        RpcTarget.All,
+                        __0);
+                }
+
+                return;
+            }
+
+            if (!IsCarrier(character) ||
+                !character.IsLocal)
+            {
+                return;
+            }
+
+            Character climber =
+                character.data.carriedPlayer;
+
+            if (climber != null &&
+                climber.data != null &&
+                climber.data.isRopeClimbing &&
+                climber.photonView != null)
+            {
+                climber.photonView.RPC(
+                    "StopRopeClimbingRpc",
+                    RpcTarget.All,
+                    __0);
+            }
+        }
+    }
+
+    [HarmonyPatch(
+        typeof(CharacterVineClimbing),
+        "Update")]
+    private static class CharacterVineClimbing_Update_TransportPatch
+    {
+        [HarmonyPrefix]
+        [HarmonyPriority(Priority.First)]
+        private static bool Prefix(
+            CharacterVineClimbing __instance)
+        {
+            Character climber =
+                ResolveCharacter(
+                    __instance);
+
+            if (!IsClimber(climber))
+            {
+                return true;
+            }
+
+            if (climber.IsLocal &&
+                climber.data != null &&
+                climber.data.isVineClimbing &&
+                climber.input != null &&
+                climber.input.jumpWasPressed &&
+                climber.photonView != null)
+            {
+                climber.photonView.RPC(
+                    "StopVineClimbingRpc",
+                    RpcTarget.All,
+                    true);
+            }
+
+            return false;
+        }
+    }
+
+    [HarmonyPatch(
+        typeof(CharacterVineClimbing),
+        "FixedUpdate")]
+    private static class CharacterVineClimbing_FixedUpdate_TransportPatch
+    {
+        [HarmonyPrefix]
+        [HarmonyPriority(Priority.First)]
+        private static bool Prefix(
+            CharacterVineClimbing __instance)
+        {
+            Character character =
+                ResolveCharacter(
+                    __instance);
+
+            return
+                !IsClimber(character);
+        }
+    }
+
+    [HarmonyPatch(
+        typeof(CharacterVineClimbing),
+        nameof(
+            CharacterVineClimbing.GrabVineRpc),
+        new Type[]
+        {
+            typeof(PhotonView),
+            typeof(int)
+        })]
+    private static class CharacterVineClimbing_GrabVineRpc_TransportPatch
+    {
+        [HarmonyPostfix]
+        [HarmonyPriority(Priority.Last)]
+        private static void Postfix(
+            CharacterVineClimbing __instance,
+            PhotonView __0,
+            int __1)
+        {
+            Character climber =
+                ResolveCharacter(
+                    __instance);
+
+            if (!IsClimber(climber) ||
+                climber.data == null)
+            {
+                return;
+            }
+
+            Character carrier =
+                climber.data.carrier;
+
+            if (carrier == null ||
+                !carrier.IsLocal ||
+                carrier.data == null ||
+                carrier.photonView == null ||
+                __0 == null)
+            {
+                return;
+            }
+
+            if (carrier.data.isVineClimbing &&
+                carrier.data.heldVine ==
+                    climber.data.heldVine)
+            {
+                return;
+            }
+
+            carrier.photonView.RPC(
+                "GrabVineRpc",
+                RpcTarget.All,
+                __0,
+                __1);
+        }
+    }
+
+    [HarmonyPatch(
+        typeof(CharacterVineClimbing),
+        "StopVineClimbingRpc",
+        new Type[]
+        {
+            typeof(bool)
+        })]
+    private static class CharacterVineClimbing_StopVineClimbingRpc_TransportPatch
+    {
+        [HarmonyPostfix]
+        [HarmonyPriority(Priority.Last)]
+        private static void Postfix(
+            CharacterVineClimbing __instance,
+            bool __0)
+        {
+            Character character =
+                ResolveCharacter(
+                    __instance);
+
+            if (character == null ||
+                character.data == null)
+            {
+                return;
+            }
+
+            if (IsClimber(character))
+            {
+                Character carrier =
+                    character.data.carrier;
+
+                if (carrier != null &&
+                    carrier.IsLocal &&
+                    carrier.data != null &&
+                    carrier.data.isVineClimbing &&
+                    carrier.photonView != null)
+                {
+                    carrier.photonView.RPC(
+                        "StopVineClimbingRpc",
+                        RpcTarget.All,
+                        __0);
+                }
+
+                return;
+            }
+
+            if (!IsCarrier(character) ||
+                !character.IsLocal)
+            {
+                return;
+            }
+
+            Character climber =
+                character.data.carriedPlayer;
+
+            if (climber != null &&
+                climber.data != null &&
+                climber.data.isVineClimbing &&
+                climber.photonView != null)
+            {
+                climber.photonView.RPC(
+                    "StopVineClimbingRpc",
+                    RpcTarget.All,
+                    __0);
+            }
+        }
+    }
+
     internal static void UpdateCarrierVisibilityForClimber()
     {
         Character localCharacter =
@@ -2175,7 +2613,8 @@ public sealed class SeparateRoleRuntime :
 
         Vector2 movementInput =
             gameplayInput &&
-            carrier.data.isClimbing
+            IsCarrierMovementAuthorityActiveLocal(
+                carrier)
                 ? ReadMovementInputLocal()
                 : Vector2.zero;
 
@@ -2267,14 +2706,25 @@ public sealed class SeparateRoleRuntime :
             actionEdges !=
                 0;
 
+        bool movementAuthorityActive =
+            IsCarrierMovementAuthorityActiveLocal(
+                carrier);
+
+        bool movementHeld =
+            movementInput.sqrMagnitude >
+                0.0004f;
+
         bool shouldSend =
             !hasSentInputState ||
             sendReliable ||
             (
-                carrier.data.isClimbing &&
+                movementAuthorityActive &&
                 now >=
                     nextInputSendTime &&
-                movementChanged
+                (
+                    movementChanged ||
+                    movementHeld
+                )
             ) ||
             (
                 inputFlags != 0 &&
@@ -2391,6 +2841,19 @@ public sealed class SeparateRoleRuntime :
                 .photonView
                 .Owner
                 .ActorNumber;
+    }
+
+    private static bool IsCarrierMovementAuthorityActiveLocal(
+        Character character)
+    {
+        return
+            character != null &&
+            character.data != null &&
+            (
+                character.data.isClimbing ||
+                character.data.isRopeClimbing ||
+                character.data.isVineClimbing
+            );
     }
 
     private static bool CanUseGameplayInputLocal()
