@@ -28,7 +28,7 @@ public static class SeparateRole
         0.15f;
 
     private const int InputPayloadLength =
-        49;
+        22;
 
     [StructLayout(
         LayoutKind.Explicit)]
@@ -40,6 +40,10 @@ public static class SeparateRole
         [FieldOffset(0)]
         public int IntValue;
     }
+
+    private static readonly RaycastHit[]
+        interactionRayHitCache =
+            new RaycastHit[64];
 
     private static Harmony harmony;
 
@@ -75,160 +79,21 @@ public static class SeparateRole
     private static RemoteUpperBodyInput remoteInput =
         new RemoteUpperBodyInput();
 
-    private static AppliedUpperBodyInput appliedInput =
-        new AppliedUpperBodyInput();
+    private static byte pendingActionEdges;
 
     private sealed class RemoteUpperBodyInput
     {
         public int SourceActor = -1;
         public int TargetActor = -1;
+        public int Sequence = -1;
 
-        public Vector2 LookInput =
+        public Vector2 MovementInput =
             Vector2.zero;
 
-        public Vector2 ClimbMovementInput =
-            Vector2.zero;
-
-        public bool InteractHeld;
         public bool PrimaryHeld;
         public bool SecondaryHeld;
-        public bool DropHeld;
-
-        public int SlotForwardCounter;
-        public int SlotBackwardCounter;
-        public int UnselectCounter;
-        public int BackpackCounter;
-        public int ScrollBackwardCounter;
-        public int ScrollForwardCounter;
-
-        public int HotbarHeldMask;
-
-        public float ScrollInput;
 
         public float ReceivedTime = -100f;
-    }
-
-    private sealed class AppliedUpperBodyInput
-    {
-        public int Frame = -1;
-
-        public bool PreviousInteractHeld;
-        public bool PreviousPrimaryHeld;
-        public bool PreviousSecondaryHeld;
-        public bool PreviousDropHeld;
-
-        public bool InteractPressed;
-        public bool InteractReleased;
-
-        public bool PrimaryPressed;
-        public bool PrimaryReleased;
-
-        public bool SecondaryPressed;
-        public bool SecondaryReleased;
-
-        public bool DropPressed;
-        public bool DropReleased;
-
-        public int SlotForwardCounter;
-        public int SlotBackwardCounter;
-        public int UnselectCounter;
-        public int BackpackCounter;
-        public int ScrollBackwardCounter;
-        public int ScrollForwardCounter;
-
-        public bool SlotForwardPressed;
-        public bool SlotBackwardPressed;
-        public bool UnselectPressed;
-        public bool BackpackPressed;
-        public bool ScrollBackwardPressed;
-        public bool ScrollForwardPressed;
-
-        public int PreviousHotbarHeldMask;
-        public int HotbarPressedMask;
-
-        public void Reset()
-        {
-            Frame =
-                -1;
-
-            PreviousInteractHeld =
-                false;
-
-            PreviousPrimaryHeld =
-                false;
-
-            PreviousSecondaryHeld =
-                false;
-
-            PreviousDropHeld =
-                false;
-
-            InteractPressed =
-                false;
-
-            InteractReleased =
-                false;
-
-            PrimaryPressed =
-                false;
-
-            PrimaryReleased =
-                false;
-
-            SecondaryPressed =
-                false;
-
-            SecondaryReleased =
-                false;
-
-            DropPressed =
-                false;
-
-            DropReleased =
-                false;
-
-            SlotForwardCounter =
-                0;
-
-            SlotBackwardCounter =
-                0;
-
-            UnselectCounter =
-                0;
-
-            BackpackCounter =
-                0;
-
-            ScrollBackwardCounter =
-                0;
-
-            ScrollForwardCounter =
-                0;
-
-            SlotForwardPressed =
-                false;
-
-            SlotBackwardPressed =
-                false;
-
-            UnselectPressed =
-                false;
-
-            BackpackPressed =
-                false;
-
-            ScrollBackwardPressed =
-                false;
-
-            ScrollForwardPressed =
-                false;
-
-            PreviousHotbarHeldMask =
-                0;
-
-            HotbarPressedMask =
-                0;
-        }
     }
 
     public static void Initialize(
@@ -241,9 +106,6 @@ public static class SeparateRole
 
         if (plugin == null)
         {
-            Debug.LogError(
-                "[SeparateRole] CoopMod instance is null.");
-
             return;
         }
 
@@ -321,23 +183,23 @@ public static class SeparateRole
 
         Patch(
             typeof(
+                Interaction_DoInteractableRaycasts_CarrierOrigin_Patch));
+
+        Patch(
+            typeof(
+                CharacterItems_DoUsing_RolePatch));
+
+        Patch(
+            typeof(
+                CharacterItems_DoDropping_RolePatch));
+
+        Patch(
+            typeof(
+                CharacterItems_DoSwitching_RolePatch));
+
+        Patch(
+            typeof(
                 Character_CheckMovement_Patch));
-
-        Patch(
-            typeof(
-                Item_RequestPickup_RedirectToCarrier_Patch));
-
-        Patch(
-            typeof(
-                CharacterItems_DoUsing_Patch));
-
-        Patch(
-            typeof(
-                CharacterItems_DoDropping_Patch));
-
-        Patch(
-            typeof(
-                CharacterItems_DoSwitching_Patch));
 
         Patch(
             typeof(
@@ -354,10 +216,6 @@ public static class SeparateRole
         Patch(
             typeof(
                 CharacterCarrying_PassOutLock_Patch));
-
-        Patch(
-            typeof(
-                Character_ObservedCharacter_Patch));
 
         runtime =
             plugin.gameObject
@@ -379,9 +237,6 @@ public static class SeparateRole
 
         nextVisibilityRefreshTime =
             0f;
-
-        Debug.Log(
-            "[SeparateRole] Initialized. Carrier movement + Climber upper-body/item mode.");
     }
 
     public static void Shutdown()
@@ -429,9 +284,6 @@ public static class SeparateRole
             null;
 
         ResetRemoteInput();
-
-        Debug.Log(
-            "[SeparateRole] Shutdown.");
     }
 
     private static void Patch(
@@ -570,68 +422,6 @@ public static class SeparateRole
                 .ActorNumber;
     }
 
-    private static Vector2 ReadLookInput()
-    {
-        if (CharacterInput.action_look ==
-            null)
-        {
-            return
-                Vector2.zero;
-        }
-
-        return
-            CharacterInput
-                .action_look
-                .ReadValue<Vector2>();
-    }
-
-    private static Vector2 ReadMovementInput()
-    {
-        Vector2 movement =
-            Vector2.zero;
-
-        if (CharacterInput.action_move != null)
-        {
-            movement +=
-                CharacterInput
-                    .action_move
-                    .ReadValue<Vector2>();
-        }
-
-        if (CharacterInput.action_moveForward != null &&
-            CharacterInput.action_moveForward.IsPressed())
-        {
-            movement +=
-                Vector2.up;
-        }
-
-        if (CharacterInput.action_moveBackward != null &&
-            CharacterInput.action_moveBackward.IsPressed())
-        {
-            movement -=
-                Vector2.up;
-        }
-
-        if (CharacterInput.action_moveRight != null &&
-            CharacterInput.action_moveRight.IsPressed())
-        {
-            movement +=
-                Vector2.right;
-        }
-
-        if (CharacterInput.action_moveLeft != null &&
-            CharacterInput.action_moveLeft.IsPressed())
-        {
-            movement -=
-                Vector2.right;
-        }
-
-        return
-            Vector2.ClampMagnitude(
-                movement,
-                1f);
-    }
-
     private static void ClearClimberCharacterInput(
         CharacterInput input)
     {
@@ -640,65 +430,8 @@ public static class SeparateRole
             return;
         }
 
-        input.lookInput =
-            Vector2.zero;
-
         input.movementInput =
             Vector2.zero;
-
-        input.usePrimaryWasPressed =
-            false;
-
-        input.usePrimaryIsPressed =
-            false;
-
-        input.usePrimaryWasReleased =
-            false;
-
-        input.useSecondaryWasPressed =
-            false;
-
-        input.useSecondaryIsPressed =
-            false;
-
-        input.useSecondaryWasReleased =
-            false;
-
-        input.dropWasPressed =
-            false;
-
-        input.dropIsPressed =
-            false;
-
-        input.dropWasReleased =
-            false;
-
-        input.selectSlotForwardWasPressed =
-            false;
-
-        input.selectSlotBackwardWasPressed =
-            false;
-
-        input.unselectSlotWasPressed =
-            false;
-
-        input.selectBackpackWasPressed =
-            false;
-
-        input.scrollBackwardWasPressed =
-            false;
-
-        input.scrollForwardWasPressed =
-            false;
-
-        input.scrollBackwardIsPressed =
-            false;
-
-        input.scrollForwardIsPressed =
-            false;
-
-        input.scrollInput =
-            0f;
 
         input.jumpWasPressed =
             false;
@@ -726,7 +459,6 @@ public static class SeparateRole
 
         input.crouchToggleWasPressed =
             false;
-
     }
 
     private static void WriteInt32(
@@ -804,11 +536,8 @@ public static class SeparateRole
         remoteInput =
             new RemoteUpperBodyInput();
 
-        appliedInput =
-            new AppliedUpperBodyInput();
-
-        appliedInput.Reset();
-
+        pendingActionEdges =
+            0;
     }
 
     private static bool RemoteInputIsValid(
@@ -887,164 +616,6 @@ public static class SeparateRole
                 climberActor;
     }
 
-    private static void PrepareAppliedInput(
-        Character carrier)
-    {
-        if (appliedInput.Frame ==
-            Time.frameCount)
-        {
-            return;
-        }
-
-        appliedInput.Frame =
-            Time.frameCount;
-
-        bool valid =
-            RemoteInputIsValid(
-                carrier);
-
-        bool heldValid =
-            RemoteHeldInputIsValid(
-                carrier);
-
-        bool interactHeld =
-            valid &&
-            remoteInput.InteractHeld;
-
-        bool primaryHeld =
-            heldValid &&
-            remoteInput.PrimaryHeld;
-
-        bool secondaryHeld =
-            heldValid &&
-            remoteInput.SecondaryHeld;
-
-        bool dropHeld =
-            heldValid &&
-            remoteInput.DropHeld;
-
-        appliedInput.InteractPressed =
-            interactHeld &&
-            !appliedInput
-                .PreviousInteractHeld;
-
-        appliedInput.InteractReleased =
-            !interactHeld &&
-            appliedInput
-                .PreviousInteractHeld;
-
-        appliedInput.PrimaryPressed =
-            primaryHeld &&
-            !appliedInput
-                .PreviousPrimaryHeld;
-
-        appliedInput.PrimaryReleased =
-            !primaryHeld &&
-            appliedInput
-                .PreviousPrimaryHeld;
-
-        appliedInput.SecondaryPressed =
-            secondaryHeld &&
-            !appliedInput
-                .PreviousSecondaryHeld;
-
-        appliedInput.SecondaryReleased =
-            !secondaryHeld &&
-            appliedInput
-                .PreviousSecondaryHeld;
-
-        appliedInput.DropPressed =
-            dropHeld &&
-            !appliedInput
-                .PreviousDropHeld;
-
-        appliedInput.DropReleased =
-            !dropHeld &&
-            appliedInput
-                .PreviousDropHeld;
-
-        appliedInput.PreviousInteractHeld =
-            interactHeld;
-
-        appliedInput.PreviousPrimaryHeld =
-            primaryHeld;
-
-        appliedInput.PreviousSecondaryHeld =
-            secondaryHeld;
-
-        appliedInput.PreviousDropHeld =
-            dropHeld;
-
-        appliedInput.SlotForwardPressed =
-            valid &&
-            remoteInput.SlotForwardCounter !=
-            appliedInput.SlotForwardCounter;
-
-        appliedInput.SlotBackwardPressed =
-            valid &&
-            remoteInput.SlotBackwardCounter !=
-            appliedInput.SlotBackwardCounter;
-
-        appliedInput.UnselectPressed =
-            valid &&
-            remoteInput.UnselectCounter !=
-            appliedInput.UnselectCounter;
-
-        appliedInput.BackpackPressed =
-            valid &&
-            remoteInput.BackpackCounter !=
-            appliedInput.BackpackCounter;
-
-        appliedInput.ScrollBackwardPressed =
-            valid &&
-            remoteInput.ScrollBackwardCounter !=
-            appliedInput.ScrollBackwardCounter;
-
-        appliedInput.ScrollForwardPressed =
-            valid &&
-            remoteInput.ScrollForwardCounter !=
-            appliedInput.ScrollForwardCounter;
-
-        int hotbarHeldMask =
-            valid
-                ? remoteInput.HotbarHeldMask
-                : 0;
-
-        appliedInput.HotbarPressedMask =
-            hotbarHeldMask &
-            ~appliedInput.PreviousHotbarHeldMask;
-
-        appliedInput.PreviousHotbarHeldMask =
-            hotbarHeldMask;
-
-        if (valid)
-        {
-            appliedInput.SlotForwardCounter =
-                remoteInput
-                    .SlotForwardCounter;
-
-            appliedInput.SlotBackwardCounter =
-                remoteInput
-                    .SlotBackwardCounter;
-
-            appliedInput.UnselectCounter =
-                remoteInput
-                    .UnselectCounter;
-
-            appliedInput.BackpackCounter =
-                remoteInput
-                    .BackpackCounter;
-
-            appliedInput.ScrollBackwardCounter =
-                remoteInput
-                    .ScrollBackwardCounter;
-
-            appliedInput.ScrollForwardCounter =
-                remoteInput
-                    .ScrollForwardCounter;
-        }
-    }
-
     private static void ApplyClimberInputToCarrier(
         CharacterInput input,
         Character carrier)
@@ -1055,9 +626,6 @@ public static class SeparateRole
             return;
         }
 
-        PrepareAppliedInput(
-            carrier);
-
         bool valid =
             RemoteInputIsValid(
                 carrier);
@@ -1066,14 +634,14 @@ public static class SeparateRole
             RemoteHeldInputIsValid(
                 carrier);
 
-        /*
-         * 카메라/시선/캐릭터 방향은 운반자(A)가 전담합니다.
-         * CharacterInput.Sample이 읽은 운반자의 원래 lookInput을
-         * 절대 덮어쓰지 않습니다.
-         *
-         * 등반자(B)는 운반자의 카메라를 네트워크로 그대로 받아 보기만 하며,
-         * 자신의 Look 입력으로 캐릭터 방향을 바꿀 수 없습니다.
-         */
+        byte actionEdges =
+            pendingActionEdges;
+
+        pendingActionEdges =
+            0;
+
+        input.lookInput =
+            Vector2.zero;
 
         input.interactWasPressed =
             false;
@@ -1085,74 +653,117 @@ public static class SeparateRole
             false;
 
         input.usePrimaryWasPressed =
-            appliedInput.PrimaryPressed;
+            false;
+
+        input.usePrimaryIsPressed =
+            false;
+
+        input.usePrimaryWasReleased =
+            false;
+
+        input.useSecondaryWasPressed =
+            false;
+
+        input.useSecondaryIsPressed =
+            false;
+
+        input.useSecondaryWasReleased =
+            false;
+
+        input.dropWasPressed =
+            false;
+
+        input.dropIsPressed =
+            false;
+
+        input.dropWasReleased =
+            false;
+
+        input.selectSlotForwardWasPressed =
+            false;
+
+        input.selectSlotBackwardWasPressed =
+            false;
+
+        input.unselectSlotWasPressed =
+            false;
+
+        input.selectBackpackWasPressed =
+            false;
+
+        input.pingWasPressed =
+            false;
+
+        input.emoteIsPressed =
+            false;
+
+        input.spectateLeftWasPressed =
+            false;
+
+        input.spectateRightWasPressed =
+            false;
+
+        if (carrier.data == null)
+        {
+            return;
+        }
+
+        Character climber =
+            carrier
+                .data
+                .carriedPlayer;
+
+        if (climber != null &&
+            climber.data != null)
+        {
+            carrier.data.lookValues =
+                climber.data.lookValues;
+        }
+
+        if (carrier.data.isClimbing)
+        {
+            input.movementInput =
+                valid
+                    ? remoteInput.MovementInput
+                    : Vector2.zero;
+        }
+
+        if (!valid)
+        {
+            return;
+        }
+
+        input.usePrimaryWasPressed =
+            (
+                actionEdges &
+                1
+            ) != 0;
 
         input.usePrimaryIsPressed =
             heldValid &&
             remoteInput.PrimaryHeld;
 
         input.usePrimaryWasReleased =
-            appliedInput.PrimaryReleased;
+            (
+                actionEdges &
+                2
+            ) != 0;
 
         input.useSecondaryWasPressed =
-            appliedInput.SecondaryPressed;
+            (
+                actionEdges &
+                4
+            ) != 0;
 
         input.useSecondaryIsPressed =
             heldValid &&
             remoteInput.SecondaryHeld;
 
         input.useSecondaryWasReleased =
-            appliedInput.SecondaryReleased;
-
-        input.dropWasPressed =
-            appliedInput.DropPressed;
-
-        input.dropIsPressed =
-            heldValid &&
-            remoteInput.DropHeld;
-
-        input.dropWasReleased =
-            appliedInput.DropReleased;
-
-        input.selectSlotForwardWasPressed =
-            appliedInput.SlotForwardPressed;
-
-        input.selectSlotBackwardWasPressed =
-            appliedInput.SlotBackwardPressed;
-
-        input.unselectSlotWasPressed =
-            appliedInput.UnselectPressed;
-
-        input.selectBackpackWasPressed =
-            appliedInput.BackpackPressed;
-
-        input.scrollBackwardWasPressed =
-            appliedInput.ScrollBackwardPressed;
-
-        input.scrollForwardWasPressed =
-            appliedInput.ScrollForwardPressed;
-
-        input.scrollBackwardIsPressed =
-            appliedInput.ScrollBackwardPressed;
-
-        input.scrollForwardIsPressed =
-            appliedInput.ScrollForwardPressed;
-
-        input.scrollInput =
-            valid
-                ? remoteInput.ScrollInput
-                : 0f;
-
-        if (carrier.data.isClimbing ||
-            carrier.data.isRopeClimbing ||
-            carrier.data.isVineClimbing)
-        {
-            input.movementInput =
-                valid
-                    ? remoteInput
-                        .ClimbMovementInput
-                    : Vector2.zero;
-        }
+            (
+                actionEdges &
+                8
+            ) != 0;
     }
 
     internal static void RuntimeUpdate()
@@ -1229,6 +840,11 @@ public static class SeparateRole
                 payload,
                 ref offset);
 
+        int sequence =
+            ReadInt32(
+                payload,
+                ref offset);
+
         int localActor =
             GetActorNumber(
                 localCharacter);
@@ -1250,16 +866,28 @@ public static class SeparateRole
             return;
         }
 
-        remoteInput.SourceActor =
-            sourceActor;
+        if (remoteInput.SourceActor !=
+                sourceActor ||
+            remoteInput.TargetActor !=
+                targetActor)
+        {
+            remoteInput =
+                new RemoteUpperBodyInput();
 
-        remoteInput.TargetActor =
-            targetActor;
+            remoteInput.SourceActor =
+                sourceActor;
 
-        remoteInput.LookInput =
-            Vector2.zero;
+            remoteInput.TargetActor =
+                targetActor;
+        }
 
-        remoteInput.ClimbMovementInput =
+        if (sequence <=
+            remoteInput.Sequence)
+        {
+            return;
+        }
+
+        Vector2 movementInput =
             new Vector2(
                 ReadSingle(
                     payload,
@@ -1271,69 +899,35 @@ public static class SeparateRole
         byte flags =
             payload[offset++];
 
-        remoteInput.InteractHeld =
+        byte actionEdges =
+            payload[offset++];
+
+        remoteInput.SourceActor =
+            sourceActor;
+
+        remoteInput.TargetActor =
+            targetActor;
+
+        remoteInput.Sequence =
+            sequence;
+
+        remoteInput.MovementInput =
+            movementInput;
+
+        remoteInput.PrimaryHeld =
             (
                 flags &
                 1
             ) != 0;
 
-        remoteInput.PrimaryHeld =
+        remoteInput.SecondaryHeld =
             (
                 flags &
                 2
             ) != 0;
 
-        remoteInput.SecondaryHeld =
-            (
-                flags &
-                4
-            ) != 0;
-
-        remoteInput.DropHeld =
-            (
-                flags &
-                8
-            ) != 0;
-
-        remoteInput.SlotForwardCounter =
-            ReadInt32(
-                payload,
-                ref offset);
-
-        remoteInput.SlotBackwardCounter =
-            ReadInt32(
-                payload,
-                ref offset);
-
-        remoteInput.UnselectCounter =
-            ReadInt32(
-                payload,
-                ref offset);
-
-        remoteInput.BackpackCounter =
-            ReadInt32(
-                payload,
-                ref offset);
-
-        remoteInput.ScrollBackwardCounter =
-            ReadInt32(
-                payload,
-                ref offset);
-
-        remoteInput.ScrollForwardCounter =
-            ReadInt32(
-                payload,
-                ref offset);
-
-        remoteInput.ScrollInput =
-            ReadSingle(
-                payload,
-                ref offset);
-
-        remoteInput.HotbarHeldMask =
-            ReadInt32(
-                payload,
-                ref offset);
+        pendingActionEdges |=
+            actionEdges;
 
         remoteInput.ReceivedTime =
             Time.realtimeSinceStartup;
@@ -1373,6 +967,13 @@ public static class SeparateRole
 
             if (IsClimber(character))
             {
+                if (__instance.interactWasPressed &&
+                    !__instance.interactIsPressed)
+                {
+                    __instance.interactIsPressed =
+                        true;
+                }
+
                 ClearClimberCharacterInput(
                     __instance);
             }
@@ -1403,10 +1004,7 @@ public static class SeparateRole
 
             if (IsClimber(character))
             {
-                __result =
-                    false;
-
-                return false;
+                return true;
             }
 
             if (!IsCarrier(character))
@@ -1414,27 +1012,8 @@ public static class SeparateRole
                 return true;
             }
 
-            PrepareAppliedInput(
-                character);
-
-            if (key < 0 ||
-                key >= 31)
-            {
-                __result =
-                    false;
-
-                return false;
-            }
-
-            int bit =
-                1 << key;
-
             __result =
-                (
-                    appliedInput
-                        .HotbarPressedMask &
-                    bit
-                ) != 0;
+                false;
 
             return false;
         }
@@ -1464,10 +1043,7 @@ public static class SeparateRole
 
             if (IsClimber(character))
             {
-                __result =
-                    false;
-
-                return false;
+                return true;
             }
 
             if (!IsCarrier(character))
@@ -1475,31 +1051,516 @@ public static class SeparateRole
                 return true;
             }
 
-            bool valid =
-                RemoteInputIsValid(
-                    character);
+            __result =
+                false;
 
-            if (!valid ||
-                key < 0 ||
-                key >= 31)
+            return false;
+        }
+    }
+
+
+    private static bool IsPairCollider(
+        Collider collider,
+        Character climber,
+        Character carrier)
+    {
+        if (collider == null)
+        {
+            return false;
+        }
+
+        Character owner =
+            collider
+                .GetComponentInParent<Character>();
+
+        return
+            owner != null &&
+            (
+                owner ==
+                    climber ||
+                owner ==
+                    carrier
+            );
+    }
+
+    private static bool TryGetStuckInteractable(
+        Character climber,
+        Vector3 lookDirection,
+        out IInteractible result)
+    {
+        result =
+            null;
+
+        if (climber == null ||
+            climber.data == null ||
+            climber.refs == null ||
+            climber.refs.afflictions == null)
+        {
+            return false;
+        }
+
+        float verticalAngle =
+            Vector3.Angle(
+                Vector3.down,
+                lookDirection);
+
+        if (verticalAngle <=
+            10f)
+        {
+            foreach (
+                StickyItemComponent sticky
+                in StickyItemComponent
+                    .ALL_STUCK_ITEMS)
             {
-                __result =
-                    false;
+                if (sticky != null &&
+                    sticky.item != null &&
+                    sticky.item.Center().y <=
+                        climber.Center.y)
+                {
+                    result =
+                        sticky.item;
+
+                    return true;
+                }
+            }
+
+            foreach (
+                ThornOnMe thorn
+                in climber
+                    .refs
+                    .afflictions
+                    .physicalThorns)
+            {
+                if (thorn != null &&
+                    thorn.stuckIn &&
+                    thorn.ICanAlwaysRemove &&
+                    thorn.Center().y <=
+                        climber.Center.y)
+                {
+                    result =
+                        thorn;
+
+                    return true;
+                }
+            }
+        }
+        else if (verticalAngle >=
+            170f)
+        {
+            foreach (
+                StickyItemComponent sticky
+                in StickyItemComponent
+                    .ALL_STUCK_ITEMS)
+            {
+                if (sticky != null &&
+                    sticky.item != null &&
+                    sticky.item.Center().y >=
+                        climber.Center.y)
+                {
+                    result =
+                        sticky.item;
+
+                    return true;
+                }
+            }
+
+            foreach (
+                ThornOnMe thorn
+                in climber
+                    .refs
+                    .afflictions
+                    .physicalThorns)
+            {
+                if (thorn != null &&
+                    thorn.stuckIn &&
+                    thorn.ICanAlwaysRemove &&
+                    thorn.Center().y >=
+                        climber.Center.y)
+                {
+                    result =
+                        thorn;
+
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    [HarmonyPatch(
+        typeof(Interaction),
+        "DoInteractableRaycasts")]
+    private static class
+        Interaction_DoInteractableRaycasts_CarrierOrigin_Patch
+    {
+        [HarmonyPrefix]
+        [HarmonyPriority(Priority.First)]
+        private static bool Prefix(
+            Interaction __instance,
+            ref IInteractible interactableResult,
+            float overrideDistance,
+            bool ignoreInteractable)
+        {
+            Character climber =
+                Character.localCharacter;
+
+            if (__instance == null ||
+                climber == null ||
+                !climber.IsLocal ||
+                !IsClimber(
+                    climber) ||
+                climber.data == null)
+            {
+                return true;
+            }
+
+            Character carrier =
+                climber
+                    .data
+                    .carrier;
+
+            if (carrier == null ||
+                carrier.data == null)
+            {
+                return true;
+            }
+
+            Vector3 rayDirection =
+                climber
+                    .data
+                    .lookDirection;
+
+            if (rayDirection.sqrMagnitude <
+                0.000001f)
+            {
+                interactableResult =
+                    null;
 
                 return false;
             }
 
-            int bit =
-                1 << key;
+            rayDirection.Normalize();
 
-            __result =
-                (
-                    remoteInput
-                        .HotbarHeldMask &
-                    bit
-                ) != 0;
+            float distance =
+                overrideDistance ==
+                    -1f
+                    ? __instance.distance
+                    : overrideDistance;
+
+            if (TryGetStuckInteractable(
+                    climber,
+                    rayDirection,
+                    out interactableResult))
+            {
+                return false;
+            }
+
+            Vector3 rayOrigin =
+                carrier.Head;
+
+            Ray ray =
+                new Ray(
+                    rayOrigin,
+                    rayDirection);
+
+            int hitCount =
+                HelperFunctions.LineCheckAll(
+                    ray.origin,
+                    ray.origin +
+                        ray.direction *
+                        distance,
+                    HelperFunctions
+                        .LayerType
+                        .AllPhysical,
+                    interactionRayHitCache,
+                    0f,
+                    QueryTriggerInteraction
+                        .Collide);
+
+            IInteractible best =
+                null;
+
+            RaycastHit nearestHit =
+                default(
+                    RaycastHit);
+
+            nearestHit.distance =
+                float.MaxValue;
+
+            Item currentItem =
+                climber
+                    .data
+                    .currentItem;
+
+            float nearestDistance =
+                distance;
+
+            for (int i = 0;
+                i < hitCount;
+                i++)
+            {
+                RaycastHit hit =
+                    interactionRayHitCache[i];
+
+                if (hit.collider == null ||
+                    hit.distance >=
+                        nearestDistance ||
+                    IsPairCollider(
+                        hit.collider,
+                        climber,
+                        carrier))
+                {
+                    continue;
+                }
+
+                Item hitItem;
+
+                if (Item.TryGetItemFromCollider(
+                        hit.collider,
+                        out hitItem) &&
+                    hitItem != null &&
+                    hitItem ==
+                        currentItem)
+                {
+                    continue;
+                }
+
+                nearestDistance =
+                    hit.distance;
+
+                nearestHit =
+                    hit;
+            }
+
+            if (nearestHit.collider !=
+                null)
+            {
+                IInteractible direct =
+                    nearestHit
+                        .collider
+                        .GetComponentInParent<
+                            IInteractible>();
+
+                if (direct != null &&
+                    (
+                        ignoreInteractable ||
+                        direct.IsInteractible(
+                            climber)
+                    ))
+                {
+                    best =
+                        direct;
+                }
+            }
+
+            if (best == null)
+            {
+                float bestAngle =
+                    float.MaxValue;
+
+                int sphereHitCount =
+                    Physics.SphereCastNonAlloc(
+                        rayOrigin +
+                            rayDirection *
+                            (
+                                __instance.area /
+                                2f
+                            ),
+                        __instance.area,
+                        rayDirection,
+                        __instance
+                            .sphereCastResults,
+                        Mathf.Min(
+                            nearestHit.distance,
+                            distance),
+                        HelperFunctions.GetMask(
+                            HelperFunctions
+                                .LayerType
+                                .AllPhysical),
+                        QueryTriggerInteraction
+                            .Collide);
+
+                int sphereCount =
+                    Mathf.Min(
+                        sphereHitCount,
+                        __instance
+                            .sphereCastResults
+                            .Length);
+
+                for (int i = 0;
+                    i < sphereCount;
+                    i++)
+                {
+                    RaycastHit hit =
+                        __instance
+                            .sphereCastResults[i];
+
+                    if (hit.collider == null ||
+                        IsPairCollider(
+                            hit.collider,
+                            climber,
+                            carrier))
+                    {
+                        continue;
+                    }
+
+                    Item hitItem;
+
+                    if (Item.TryGetItemFromCollider(
+                            hit.collider,
+                            out hitItem) &&
+                        hitItem != null &&
+                        hitItem ==
+                            currentItem)
+                    {
+                        continue;
+                    }
+
+                    float angle =
+                        Vector3.Angle(
+                            hit.point -
+                                rayOrigin,
+                            rayDirection);
+
+                    if (angle >=
+                        bestAngle)
+                    {
+                        continue;
+                    }
+
+                    IInteractible candidate =
+                        hit
+                            .collider
+                            .GetComponentInParent<
+                                IInteractible>();
+
+                    if (candidate == null ||
+                        (
+                            !ignoreInteractable &&
+                            !candidate
+                                .IsInteractible(
+                                    climber)
+                        ))
+                    {
+                        continue;
+                    }
+
+                    RaycastHit terrainHit =
+                        HelperFunctions.LineCheck(
+                            ray.origin,
+                            hit.point,
+                            HelperFunctions
+                                .LayerType
+                                .TerrainMap,
+                            0f,
+                            QueryTriggerInteraction
+                                .Collide);
+
+                    if (terrainHit.collider !=
+                            null &&
+                        terrainHit
+                            .collider
+                            .GetComponentInParent<
+                                IInteractible>() !=
+                            candidate)
+                    {
+                        continue;
+                    }
+
+                    bestAngle =
+                        angle;
+
+                    best =
+                        candidate;
+                }
+            }
+
+            interactableResult =
+                best;
 
             return false;
+        }
+    }
+
+    [HarmonyPatch(
+        typeof(CharacterItems),
+        "DoUsing")]
+    private static class CharacterItems_DoUsing_RolePatch
+    {
+        [HarmonyPrefix]
+        [HarmonyPriority(Priority.First)]
+        private static bool Prefix(
+            CharacterItems __instance)
+        {
+            Character character =
+                ResolveCharacter(
+                    __instance);
+
+            return
+                !IsCarrier(
+                    character);
+        }
+    }
+
+    [HarmonyPatch(
+        typeof(CharacterItems),
+        "DoDropping")]
+    private static class CharacterItems_DoDropping_RolePatch
+    {
+        [HarmonyPrefix]
+        [HarmonyPriority(Priority.First)]
+        private static bool Prefix(
+            CharacterItems __instance)
+        {
+            Character character =
+                ResolveCharacter(
+                    __instance);
+
+            return
+                !IsCarrier(
+                    character);
+        }
+    }
+
+    [HarmonyPatch(
+        typeof(CharacterItems),
+        "DoSwitching")]
+    private static class CharacterItems_DoSwitching_RolePatch
+    {
+        [HarmonyPrefix]
+        [HarmonyPriority(Priority.First)]
+        private static bool Prefix(
+            CharacterItems __instance)
+        {
+            Character character =
+                ResolveCharacter(
+                    __instance);
+
+            if (IsCarrier(
+                    character))
+            {
+                return false;
+            }
+
+            if (!IsClimber(
+                    character) ||
+                character.data == null)
+            {
+                return true;
+            }
+
+            Character carrier =
+                character.data.carrier;
+
+            if (carrier == null ||
+                carrier.data == null)
+            {
+                return true;
+            }
+
+            return
+                !carrier.data.isClimbing;
         }
     }
 
@@ -1519,109 +1580,6 @@ public static class SeparateRole
                 __result =
                     false;
             }
-        }
-    }
-
-    [HarmonyPatch(
-        typeof(Item),
-        "RequestPickup",
-        new Type[]
-        {
-            typeof(PhotonView)
-        })]
-    private static class Item_RequestPickup_RedirectToCarrier_Patch
-    {
-        [HarmonyPrefix]
-        [HarmonyPriority(Priority.First)]
-        private static void Prefix(
-            ref PhotonView characterView)
-        {
-            if (characterView == null)
-            {
-                return;
-            }
-
-            Character climber =
-                characterView
-                    .GetComponent<Character>();
-
-            if (!IsClimber(
-                    climber) ||
-                climber.data == null)
-            {
-                return;
-            }
-
-            Character carrier =
-                climber
-                    .data
-                    .carrier;
-
-            if (carrier == null ||
-                carrier.photonView == null)
-            {
-                return;
-            }
-
-            characterView =
-                carrier.photonView;
-        }
-    }
-
-    [HarmonyPatch(
-        typeof(CharacterItems),
-        "DoUsing")]
-    private static class CharacterItems_DoUsing_Patch
-    {
-        [HarmonyPrefix]
-        [HarmonyPriority(Priority.First)]
-        private static bool Prefix(
-            CharacterItems __instance)
-        {
-            Character character =
-                ResolveCharacter(
-                    __instance);
-
-            return
-                !IsClimber(character);
-        }
-    }
-
-    [HarmonyPatch(
-        typeof(CharacterItems),
-        "DoDropping")]
-    private static class CharacterItems_DoDropping_Patch
-    {
-        [HarmonyPrefix]
-        [HarmonyPriority(Priority.First)]
-        private static bool Prefix(
-            CharacterItems __instance)
-        {
-            Character character =
-                ResolveCharacter(
-                    __instance);
-
-            return
-                !IsClimber(character);
-        }
-    }
-
-    [HarmonyPatch(
-        typeof(CharacterItems),
-        "DoSwitching")]
-    private static class CharacterItems_DoSwitching_Patch
-    {
-        [HarmonyPrefix]
-        [HarmonyPriority(Priority.First)]
-        private static bool Prefix(
-            CharacterItems __instance)
-        {
-            Character character =
-                ResolveCharacter(
-                    __instance);
-
-            return
-                !IsClimber(character);
         }
     }
 
@@ -1954,43 +1912,6 @@ public static class SeparateRole
     }
 
     [HarmonyPatch(
-        typeof(Character),
-        "get_observedCharacter")]
-    private static class Character_ObservedCharacter_Patch
-    {
-        [HarmonyPostfix]
-        [HarmonyPriority(Priority.Last)]
-        private static void Postfix(
-            ref Character __result)
-        {
-            Character localCharacter =
-                Character.localCharacter;
-
-            if (localCharacter == null ||
-                !localCharacter.IsLocal ||
-                !IsClimber(localCharacter) ||
-                localCharacter.data == null)
-            {
-                return;
-            }
-
-            Character carrier =
-                localCharacter
-                    .data
-                    .carrier;
-
-            if (carrier == null ||
-                carrier.data == null)
-            {
-                return;
-            }
-
-            __result =
-                carrier;
-        }
-    }
-
-    [HarmonyPatch(
         typeof(CharacterCarrying),
         "Update")]
     private static class CharacterCarrying_PassOutLock_Patch
@@ -2098,7 +2019,7 @@ public static class SeparateRole
 
 }
 
-[DefaultExecutionOrder(10000)]
+[DefaultExecutionOrder(-10000)]
 public sealed class SeparateRoleRuntime :
     MonoBehaviour,
     IOnEventCallback
@@ -2108,12 +2029,7 @@ public sealed class SeparateRoleRuntime :
     private int currentCarrierActor =
         -1;
 
-    private int slotForwardCounter;
-    private int slotBackwardCounter;
-    private int unselectCounter;
-    private int backpackCounter;
-    private int scrollBackwardCounter;
-    private int scrollForwardCounter;
+    private int inputSequence;
 
     private float nextInputSendTime;
     private float nextInputHeartbeatTime;
@@ -2123,17 +2039,6 @@ public sealed class SeparateRoleRuntime :
         Vector2.zero;
 
     private byte lastSentInputFlags;
-
-    private float lastSentScrollInput;
-
-    private int lastSentHotbarHeldMask;
-
-    private int lastSentSlotForwardCounter;
-    private int lastSentSlotBackwardCounter;
-    private int lastSentUnselectCounter;
-    private int lastSentBackpackCounter;
-    private int lastSentScrollBackwardCounter;
-    private int lastSentScrollForwardCounter;
 
     private readonly int[]
         inputTargetActors =
@@ -2180,22 +2085,7 @@ public sealed class SeparateRoleRuntime :
         currentCarrierActor =
             -1;
 
-        slotForwardCounter =
-            0;
-
-        slotBackwardCounter =
-            0;
-
-        unselectCounter =
-            0;
-
-        backpackCounter =
-            0;
-
-        scrollBackwardCounter =
-            0;
-
-        scrollForwardCounter =
+        inputSequence =
             0;
 
         nextInputSendTime =
@@ -2211,30 +2101,6 @@ public sealed class SeparateRoleRuntime :
             Vector2.zero;
 
         lastSentInputFlags =
-            0;
-
-        lastSentScrollInput =
-            0f;
-
-        lastSentHotbarHeldMask =
-            0;
-
-        lastSentSlotForwardCounter =
-            0;
-
-        lastSentSlotBackwardCounter =
-            0;
-
-        lastSentUnselectCounter =
-            0;
-
-        lastSentBackpackCounter =
-            0;
-
-        lastSentScrollBackwardCounter =
-            0;
-
-        lastSentScrollForwardCounter =
             0;
 
         inputTargetActors[0] =
@@ -2274,7 +2140,9 @@ public sealed class SeparateRoleRuntime :
             !PhotonNetwork.InRoom ||
             PhotonNetwork.CurrentRoom == null ||
             climber == null ||
-            carrier == null)
+            carrier == null ||
+            climber.data == null ||
+            carrier.data == null)
         {
             return;
         }
@@ -2305,204 +2173,121 @@ public sealed class SeparateRoleRuntime :
         bool gameplayInput =
             CanUseGameplayInputLocal();
 
-        if (gameplayInput)
-        {
-            if (WasPressed(
-                    CharacterInput
-                        .action_selectSlotForward))
-            {
-                slotForwardCounter++;
-            }
-
-            if (WasPressed(
-                    CharacterInput
-                        .action_selectSlotBackward))
-            {
-                slotBackwardCounter++;
-            }
-
-            if (WasPressed(
-                    CharacterInput
-                        .action_unselectSlot))
-            {
-                unselectCounter++;
-            }
-
-            if (CharacterInput.action_selectBackpack !=
-                    null &&
-                CharacterInput
-                    .action_selectBackpack
-                    .WasPerformedThisFrame())
-            {
-                backpackCounter++;
-            }
-
-            if (WasPressed(
-                    CharacterInput
-                        .action_scrollBackward))
-            {
-                scrollBackwardCounter++;
-            }
-
-            if (WasPressed(
-                    CharacterInput
-                        .action_scrollForward))
-            {
-                scrollForwardCounter++;
-            }
-        }
-
         Vector2 movementInput =
-            gameplayInput
+            gameplayInput &&
+            carrier.data.isClimbing
                 ? ReadMovementInputLocal()
                 : Vector2.zero;
 
-        bool interactHeld =
-            gameplayInput &&
-            IsPressed(
-                CharacterInput
-                    .action_interact);
+        bool physicalPrimaryAllowed =
+            climber.data.currentItem ==
+                null ||
+            carrier.data.isClimbing;
 
-        bool primaryHeld =
-            gameplayInput &&
-            IsPressed(
-                CharacterInput
-                    .action_usePrimary);
-
-        bool secondaryHeld =
-            gameplayInput &&
-            IsPressed(
-                CharacterInput
-                    .action_useSecondary);
-
-        bool dropHeld =
-            gameplayInput &&
-            IsPressed(
-                CharacterInput
-                    .action_drop);
+        bool physicalSecondaryAllowed =
+            climber.data.currentItem ==
+                null;
 
         byte inputFlags =
             0;
 
-        if (interactHeld)
+        if (gameplayInput &&
+            physicalPrimaryAllowed &&
+            IsPressed(
+                CharacterInput.action_usePrimary))
         {
             inputFlags |=
                 1;
         }
 
-        if (primaryHeld)
+        if (gameplayInput &&
+            physicalSecondaryAllowed &&
+            IsPressed(
+                CharacterInput.action_useSecondary))
         {
             inputFlags |=
                 2;
         }
 
-        if (secondaryHeld)
-        {
-            inputFlags |=
-                4;
-        }
-
-        if (dropHeld)
-        {
-            inputFlags |=
-                8;
-        }
-
-        float scrollInput =
-            0f;
-
-        if (gameplayInput &&
-            CharacterInput.action_scroll !=
-                null)
-        {
-            scrollInput =
-                CharacterInput
-                    .action_scroll
-                    .ReadValue<float>();
-        }
-
-        int hotbarHeldMask =
+        byte actionEdges =
             0;
 
         if (gameplayInput &&
-            CharacterInput.hotbarActions !=
-                null)
+            physicalPrimaryAllowed &&
+            WasPressed(
+                CharacterInput.action_usePrimary))
         {
-            int hotbarCount =
-                Mathf.Min(
-                    CharacterInput
-                        .hotbarActions
-                        .Length,
-                    30);
-
-            for (int key = 0;
-                key < hotbarCount;
-                key++)
-            {
-                if (IsPressed(
-                        CharacterInput
-                            .hotbarActions[key]))
-                {
-                    hotbarHeldMask |=
-                        1 << key;
-                }
-            }
+            actionEdges |=
+                1;
         }
 
-        bool counterChanged =
-            slotForwardCounter !=
-                lastSentSlotForwardCounter ||
-            slotBackwardCounter !=
-                lastSentSlotBackwardCounter ||
-            unselectCounter !=
-                lastSentUnselectCounter ||
-            backpackCounter !=
-                lastSentBackpackCounter ||
-            scrollBackwardCounter !=
-                lastSentScrollBackwardCounter ||
-            scrollForwardCounter !=
-                lastSentScrollForwardCounter;
+        if (gameplayInput &&
+            physicalPrimaryAllowed &&
+            WasReleased(
+                CharacterInput.action_usePrimary))
+        {
+            actionEdges |=
+                2;
+        }
+
+        if (gameplayInput &&
+            physicalSecondaryAllowed &&
+            WasPressed(
+                CharacterInput.action_useSecondary))
+        {
+            actionEdges |=
+                4;
+        }
+
+        if (gameplayInput &&
+            physicalSecondaryAllowed &&
+            WasReleased(
+                CharacterInput.action_useSecondary))
+        {
+            actionEdges |=
+                8;
+        }
 
         bool immediateStateChanged =
             inputFlags !=
-                lastSentInputFlags ||
-            hotbarHeldMask !=
-                lastSentHotbarHeldMask;
+                lastSentInputFlags;
 
-        bool analogStateChanged =
+        bool movementChanged =
             (
                 movementInput -
                 lastSentMovementInput
             ).sqrMagnitude >
-                0.0004f ||
-            Mathf.Abs(
-                scrollInput -
-                lastSentScrollInput) >
-                0.01f;
+                0.0004f;
 
         float now =
             Time.realtimeSinceStartup;
 
         bool sendReliable =
-            counterChanged ||
-            immediateStateChanged;
+            immediateStateChanged ||
+            actionEdges !=
+                0;
 
         bool shouldSend =
             !hasSentInputState ||
             sendReliable ||
-            immediateStateChanged ||
             (
+                carrier.data.isClimbing &&
                 now >=
                     nextInputSendTime &&
-                analogStateChanged
+                movementChanged
             ) ||
-            now >=
-                nextInputHeartbeatTime;
+            (
+                inputFlags != 0 &&
+                now >=
+                    nextInputHeartbeatTime
+            );
 
         if (!shouldSend)
         {
             return;
         }
+
+        inputSequence++;
 
         byte[] payload =
             new byte[
@@ -2521,6 +2306,11 @@ public sealed class SeparateRoleRuntime :
             ref offset,
             targetActor);
 
+        SeparateRole.WriteInt32Local(
+            payload,
+            ref offset,
+            inputSequence);
+
         SeparateRole.WriteSingleLocal(
             payload,
             ref offset,
@@ -2534,45 +2324,8 @@ public sealed class SeparateRoleRuntime :
         payload[offset++] =
             inputFlags;
 
-        SeparateRole.WriteInt32Local(
-            payload,
-            ref offset,
-            slotForwardCounter);
-
-        SeparateRole.WriteInt32Local(
-            payload,
-            ref offset,
-            slotBackwardCounter);
-
-        SeparateRole.WriteInt32Local(
-            payload,
-            ref offset,
-            unselectCounter);
-
-        SeparateRole.WriteInt32Local(
-            payload,
-            ref offset,
-            backpackCounter);
-
-        SeparateRole.WriteInt32Local(
-            payload,
-            ref offset,
-            scrollBackwardCounter);
-
-        SeparateRole.WriteInt32Local(
-            payload,
-            ref offset,
-            scrollForwardCounter);
-
-        SeparateRole.WriteSingleLocal(
-            payload,
-            ref offset,
-            scrollInput);
-
-        SeparateRole.WriteInt32Local(
-            payload,
-            ref offset,
-            hotbarHeldMask);
+        payload[offset++] =
+            actionEdges;
 
         if (inputTargetActors[0] !=
             targetActor)
@@ -2601,30 +2354,6 @@ public sealed class SeparateRoleRuntime :
 
         lastSentInputFlags =
             inputFlags;
-
-        lastSentScrollInput =
-            scrollInput;
-
-        lastSentHotbarHeldMask =
-            hotbarHeldMask;
-
-        lastSentSlotForwardCounter =
-            slotForwardCounter;
-
-        lastSentSlotBackwardCounter =
-            slotBackwardCounter;
-
-        lastSentUnselectCounter =
-            unselectCounter;
-
-        lastSentBackpackCounter =
-            backpackCounter;
-
-        lastSentScrollBackwardCounter =
-            scrollBackwardCounter;
-
-        lastSentScrollForwardCounter =
-            scrollForwardCounter;
 
         nextInputSendTime =
             now +
@@ -2676,6 +2405,66 @@ public sealed class SeparateRoleRuntime :
             !GUIManager.instance.wheelActive;
     }
 
+    private static Vector2 ReadMovementInputLocal()
+    {
+        Vector2 movement =
+            Vector2.zero;
+
+        if (CharacterInput.action_move !=
+            null)
+        {
+            movement +=
+                CharacterInput
+                    .action_move
+                    .ReadValue<Vector2>();
+        }
+
+        if (CharacterInput.action_moveForward !=
+                null &&
+            CharacterInput
+                .action_moveForward
+                .IsPressed())
+        {
+            movement +=
+                Vector2.up;
+        }
+
+        if (CharacterInput.action_moveBackward !=
+                null &&
+            CharacterInput
+                .action_moveBackward
+                .IsPressed())
+        {
+            movement -=
+                Vector2.up;
+        }
+
+        if (CharacterInput.action_moveRight !=
+                null &&
+            CharacterInput
+                .action_moveRight
+                .IsPressed())
+        {
+            movement +=
+                Vector2.right;
+        }
+
+        if (CharacterInput.action_moveLeft !=
+                null &&
+            CharacterInput
+                .action_moveLeft
+                .IsPressed())
+        {
+            movement -=
+                Vector2.right;
+        }
+
+        return
+            Vector2.ClampMagnitude(
+                movement,
+                1f);
+    }
+
     private static bool IsPressed(
         UnityEngine.InputSystem.InputAction action)
     {
@@ -2692,66 +2481,12 @@ public sealed class SeparateRoleRuntime :
             action.WasPressedThisFrame();
     }
 
-    private static Vector2 ReadLookInputLocal()
+    private static bool WasReleased(
+        UnityEngine.InputSystem.InputAction action)
     {
-        if (CharacterInput.action_look ==
-            null)
-        {
-            return
-                Vector2.zero;
-        }
-
         return
-            CharacterInput
-                .action_look
-                .ReadValue<Vector2>();
-    }
-
-    private static Vector2 ReadMovementInputLocal()
-    {
-        Vector2 movement =
-            Vector2.zero;
-
-        if (CharacterInput.action_move != null)
-        {
-            movement +=
-                CharacterInput
-                    .action_move
-                    .ReadValue<Vector2>();
-        }
-
-        if (CharacterInput.action_moveForward != null &&
-            CharacterInput.action_moveForward.IsPressed())
-        {
-            movement +=
-                Vector2.up;
-        }
-
-        if (CharacterInput.action_moveBackward != null &&
-            CharacterInput.action_moveBackward.IsPressed())
-        {
-            movement -=
-                Vector2.up;
-        }
-
-        if (CharacterInput.action_moveRight != null &&
-            CharacterInput.action_moveRight.IsPressed())
-        {
-            movement +=
-                Vector2.right;
-        }
-
-        if (CharacterInput.action_moveLeft != null &&
-            CharacterInput.action_moveLeft.IsPressed())
-        {
-            movement -=
-                Vector2.right;
-        }
-
-        return
-            Vector2.ClampMagnitude(
-                movement,
-                1f);
+            action != null &&
+            action.WasReleasedThisFrame();
     }
 
     private void OnDestroy()
