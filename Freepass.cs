@@ -26,6 +26,8 @@ public static class Freepass
 
         public Item Item;
         public Collider[] ItemColliders;
+
+        public bool[] CarrierColliderEnabledBuffer;
     }
 
     private struct GroundedProxyState
@@ -33,6 +35,12 @@ public static class Freepass
         public Character Climber;
         public bool Applied;
         public bool OriginalGrounded;
+    }
+
+    private struct CarrierRaycastProxyState
+    {
+        public FreepassState State;
+        public bool Applied;
     }
 
     public static void Initialize(
@@ -58,6 +66,12 @@ public static class Freepass
             .CreateClassProcessor(
                 typeof(
                     Character_FixedUpdate_Patch))
+            .Patch();
+
+        harmony
+            .CreateClassProcessor(
+                typeof(
+                    RescueHook_GetHit_CarrierRaycastPass_Patch))
             .Patch();
 
         harmony
@@ -449,6 +463,14 @@ public static class Freepass
         Character climber,
         Character carrier)
     {
+        Collider[] climberColliders =
+            GetCharacterBodyColliders(
+                climber);
+
+        Collider[] carrierColliders =
+            GetCharacterBodyColliders(
+                carrier);
+
         FreepassState state =
             new FreepassState
             {
@@ -459,12 +481,14 @@ public static class Freepass
                     carrier,
 
                 ClimberColliders =
-                    GetCharacterBodyColliders(
-                        climber),
+                    climberColliders,
 
                 CarrierColliders =
-                    GetCharacterBodyColliders(
-                        carrier)
+                    carrierColliders,
+
+                CarrierColliderEnabledBuffer =
+                    new bool[
+                        carrierColliders.Length]
             };
 
         SetCollisionIgnore(
@@ -637,6 +661,134 @@ public static class Freepass
                 out carrier);
     }
 
+    private static CarrierRaycastProxyState BeginCarrierRaycastPass(
+        RescueHook rescueHook)
+    {
+        CarrierRaycastProxyState proxyState =
+            new CarrierRaycastProxyState();
+
+        if (!initialized ||
+            rescueHook == null ||
+            rescueHook.item == null)
+        {
+            return
+                proxyState;
+        }
+
+        Character climber =
+            rescueHook
+                .item
+                .holderCharacter;
+
+        Character carrier;
+
+        if (!TryGetPair(
+                climber,
+                out carrier))
+        {
+            return
+                proxyState;
+        }
+
+        FreepassState state =
+            EnsureState(
+                climber,
+                carrier);
+
+        if (state == null ||
+            state.CarrierColliders == null ||
+            state.CarrierColliderEnabledBuffer == null ||
+            state.CarrierColliderEnabledBuffer.Length !=
+                state.CarrierColliders.Length)
+        {
+            return
+                proxyState;
+        }
+
+        proxyState.State =
+            state;
+
+        proxyState.Applied =
+            true;
+
+        for (int i = 0;
+            i < state.CarrierColliders.Length;
+            i++)
+        {
+            Collider collider =
+                state
+                    .CarrierColliders[i];
+
+            if (collider == null)
+            {
+                state
+                    .CarrierColliderEnabledBuffer[i] =
+                        false;
+
+                continue;
+            }
+
+            bool enabled =
+                collider.enabled;
+
+            state
+                .CarrierColliderEnabledBuffer[i] =
+                    enabled;
+
+            if (enabled)
+            {
+                collider.enabled =
+                    false;
+            }
+        }
+
+        return
+            proxyState;
+    }
+
+    private static void EndCarrierRaycastPass(
+        CarrierRaycastProxyState proxyState)
+    {
+        if (!proxyState.Applied ||
+            proxyState.State == null ||
+            proxyState.State.CarrierColliders == null ||
+            proxyState.State.CarrierColliderEnabledBuffer == null)
+        {
+            return;
+        }
+
+        Collider[] colliders =
+            proxyState
+                .State
+                .CarrierColliders;
+
+        bool[] enabledBuffer =
+            proxyState
+                .State
+                .CarrierColliderEnabledBuffer;
+
+        int count =
+            Mathf.Min(
+                colliders.Length,
+                enabledBuffer.Length);
+
+        for (int i = 0;
+            i < count;
+            i++)
+        {
+            Collider collider =
+                colliders[i];
+
+            if (collider == null)
+            {
+                continue;
+            }
+
+            collider.enabled =
+                enabledBuffer[i];
+        }
+    }
+
     private static GroundedProxyState BeginGroundedProxy(
         Character climber)
     {
@@ -705,6 +857,37 @@ public static class Freepass
 
         state.Climber.data.isGrounded =
             state.OriginalGrounded;
+    }
+
+    [HarmonyPatch(
+        typeof(RescueHook),
+        "GetHit")]
+    private static class
+        RescueHook_GetHit_CarrierRaycastPass_Patch
+    {
+        [HarmonyPrefix]
+        [HarmonyPriority(Priority.First)]
+        private static void Prefix(
+            RescueHook __instance,
+            out CarrierRaycastProxyState __state)
+        {
+            __state =
+                BeginCarrierRaycastPass(
+                    __instance);
+        }
+
+        [HarmonyFinalizer]
+        [HarmonyPriority(Priority.Last)]
+        private static Exception Finalizer(
+            Exception __exception,
+            CarrierRaycastProxyState __state)
+        {
+            EndCarrierRaycastPass(
+                __state);
+
+            return
+                __exception;
+        }
     }
 
     [HarmonyPatch(
