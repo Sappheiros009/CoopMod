@@ -58,6 +58,12 @@ public static class ShareDeath
                     Character_RPCA_Die_Patch))
             .Patch();
 
+        harmony
+            .CreateClassProcessor(
+                typeof(
+                    CharacterInput_Sample_DeathHold_Patch))
+            .Patch();
+
         runtime =
             plugin.gameObject
                 .GetComponent<ShareDeathRuntime>();
@@ -418,6 +424,84 @@ public static class ShareDeath
                 "RPCA_Die",
                 RpcTarget.All,
                 Array.Empty<object>());
+    }
+
+    private static bool IsCarrier(
+        Character character)
+    {
+        if (character == null ||
+            character.data == null)
+        {
+            return false;
+        }
+
+        Character rider =
+            character
+                .data
+                .carriedPlayer;
+
+        if (rider == null ||
+            rider.data == null)
+        {
+            return false;
+        }
+
+        return
+            rider.data.isCarried &&
+            rider.data.carrier ==
+                character;
+    }
+
+    [HarmonyPatch(
+        typeof(CharacterInput),
+        "Sample",
+        new Type[]
+        {
+            typeof(bool)
+        })]
+    [HarmonyAfter(
+        "com.peak.coopmod.separaterole")]
+    private static class
+        CharacterInput_Sample_DeathHold_Patch
+    {
+        [HarmonyPostfix]
+        [HarmonyPriority(Priority.Last)]
+        private static void Postfix(
+            CharacterInput __instance)
+        {
+            Character localCharacter =
+                Character.localCharacter;
+
+            if (localCharacter == null ||
+                !localCharacter.IsLocal ||
+                localCharacter.input !=
+                    __instance ||
+                localCharacter.data == null ||
+                localCharacter.data.dead ||
+                !localCharacter.data.fullyPassedOut ||
+                !IsCarrier(
+                    localCharacter) ||
+                CharacterInput.action_interact ==
+                    null)
+            {
+                return;
+            }
+
+            __instance.interactWasPressed =
+                CharacterInput
+                    .action_interact
+                    .WasPressedThisFrame();
+
+            __instance.interactIsPressed =
+                CharacterInput
+                    .action_interact
+                    .IsPressed();
+
+            __instance.interactWasReleased =
+                CharacterInput
+                    .action_interact
+                    .WasReleasedThisFrame();
+        }
     }
 
     [HarmonyPatch(
